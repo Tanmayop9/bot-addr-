@@ -1,6 +1,6 @@
 # bot-addr-
 
-A Termux-friendly Discord bot utility — no browser, no CAPTCHA.
+A Termux-friendly Discord bot utility — no browser required.
 
 Two features in one script:
 1. **Add bots** – Add all Discord bots you own to a target guild.
@@ -10,11 +10,16 @@ Two features in one script:
 ## Requirements
 
 - Python 3.10+
-- `requests` library
+- `requests`, `pyotp`, `curl_cffi` libraries
 
 ```bash
 pip install -r requirements.txt
 ```
+
+`curl_cffi` is the key dependency for Termux users — it makes the script
+impersonate Chrome's TLS fingerprint so Discord does **not** trigger a CAPTCHA
+in the first place.  The script still works without it, but CAPTCHA is more
+likely.
 
 ## Usage
 
@@ -22,10 +27,14 @@ pip install -r requirements.txt
 python add_bots.py
 ```
 
-On startup the script asks for your **Discord user token** (hidden input, never
-stored), then presents a menu:
+On startup the script prints whether the Chrome TLS bypass is active, then
+asks for your **Discord user token** (hidden input, never stored) and presents
+a menu:
 
 ```
+[INFO] curl_cffi active — Chrome TLS fingerprint (CAPTCHA bypass on).
+Enter your Discord token:
+
 What would you like to do?
   [1] Add all owned bots to a guild
   [2] Create a new bot (enable intents + reset token + invite)
@@ -47,18 +56,27 @@ Steps performed:
 
 ---
 
-### Option 2 – Create a new bot (Termux-friendly, no CAPTCHA)
+### Option 2 – Create a new bot
 
 | Prompt | Description | Default |
 |--------|-------------|---------|
 | `Enter the number of bots you wanna create:` | How many bot applications to create in this run | `1` |
 | `Enter a base name for the bot(s):` | Name given to every bot created in this run | – |
 | `Enter TOTP secret key:` | Your authenticator's base-32 secret key — the 6-digit code is generated automatically for each bot | skip |
+| `Enter Capsolver API key (or press Enter to skip):` | Optional: auto-solve CAPTCHA via Capsolver if it is still triggered despite curl_cffi | skip |
 | `Add each bot to a guild after creation? [y/N]:` | Optionally auto-invite every created bot | N |
 | `Enter the target guild ID:` | (only if auto-invite chosen) | `293939939` |
 
 Steps performed:
-1. **Create application** – `POST /applications` (bypasses the browser CAPTCHA).
+1. **Create application** – `POST /applications`.  
+   With `curl_cffi` loaded, requests are sent with Chrome's TLS fingerprint and
+   a real Android `User-Agent` + `X-Super-Properties` header, which Discord
+   treats as a legitimate browser client — CAPTCHA is not triggered.  
+   If CAPTCHA is still triggered (rare), it is resolved via:
+   - **Capsolver** (optional) – provide a key and the challenge is solved silently.
+     Free tier at [capsolver.com](https://capsolver.com) — no credit card needed.
+   - **Manual** (fallback) – step-by-step instructions to use **Kiwi Browser**
+     (Android browser with DevTools) to extract and paste the token; no PC needed.
 2. **Enable all three privileged gateway intents**:
    - Presence Update intent (bit 12)
    - Server Members intent (bit 13)
@@ -86,3 +104,13 @@ Steps performed:
   you first set up 2FA, e.g. `354n6cs4ptulgduoimkczgz72uv2wh3w`). The script
   uses `pyotp` to derive the current 6-digit code automatically — no
   authenticator app needed at runtime.
+- **CAPTCHA prevention (Termux/Android)** – The primary defence is `curl_cffi`
+  (`pip install curl_cffi`) which makes every request look like Chrome 120 at
+  the TLS layer.  This eliminates CAPTCHA for the vast majority of users.  All
+  Discord API calls also carry a realistic `User-Agent` and `X-Super-Properties`
+  header (Chrome/Android) as an additional layer.
+- **CAPTCHA fallback** – If a challenge is still returned, the script can use
+  [Capsolver](https://capsolver.com) (optional API key, free tier — no credit
+  card) for automatic solving, or guide you through **Kiwi Browser** (Android
+  Chrome with DevTools) to extract and paste the token manually — no PC required.
+
