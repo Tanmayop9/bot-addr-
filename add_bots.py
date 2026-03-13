@@ -15,6 +15,7 @@ token, MFA code) are kept only in memory for the duration of the script.
 """
 
 import sys
+import time
 
 import pyotp
 import requests
@@ -23,7 +24,11 @@ import requests
 
 PERMISSIONS = 8   # Administrator
 BASE_URL = "https://discord.com/api/v10"
+DISCORD_BASE_URL = "https://discord.com"
 TOKEN_FILE = "tokens.txt"  # bot tokens are appended here after each reset
+CAPSOLVER_API_URL = "https://api.capsolver.com"
+CAPSOLVER_POLL_INTERVAL = 3    # seconds between each getTaskResult poll
+CAPSOLVER_MAX_POLLS = 40       # maximum polls before giving up (~2 minutes total)
 
 # Privileged intent flag bits (Discord Gateway Intent flags)
 INTENT_PRESENCE        = 1 << 12   # 4096   – Presence Update intent
@@ -127,11 +132,100 @@ def totp_code_from_key(secret_key: str) -> str:
     return totp.now()
 
 
+# ── CAPTCHA solver ─────────────────────────────────────────────────────────────
+
+
+def solve_hcaptcha(capsolver_api_key: str, sitekey: str, rqdata: str) -> str | None:
+    """
+    Solve a Discord hCaptcha Enterprise challenge via CapSolver
+    (https://capsolver.com).
+
+    Parameters
+    ----------
+    capsolver_api_key : str
+        Your CapSolver client API key.
+    sitekey : str
+        The ``captcha_sitekey`` value returned by Discord in the 400 response.
+    rqdata : str
+        The ``captcha_rqdata`` value returned by Discord (Enterprise payload).
+
+    Returns
+    -------
+    str | None
+        The solved hCaptcha token (``gRecaptchaResponse``), or ``None`` on failure.
+    """
+    task_payload = {
+        "clientKey": capsolver_api_key,
+        "task": {
+            "type": "HCaptchaEnterpriseTaskProxyLess",
+            "websiteURL": DISCORD_BASE_URL,
+            "websiteKey": sitekey,
+            "enterprisePayload": {"rqdata": rqdata},
+            "isInvisible": True,
+        },
+    }
+
+    try:
+        resp = requests.post(
+            f"{CAPSOLVER_API_URL}/createTask",
+            json=task_payload,
+            timeout=15,
+        )
+        data = resp.json()
+    except Exception as exc:
+        print(f"[WARN]  CapSolver task creation failed: {exc}")
+        return None
+
+    if data.get("errorId", 0) != 0:
+        print(f"[WARN]  CapSolver error: {data.get('errorDescription', 'unknown')}")
+        return None
+
+    task_id = data.get("taskId")
+    if not task_id:
+        print("[WARN]  CapSolver returned no taskId.")
+        return None
+
+    print("[INFO] Waiting for CAPTCHA solution …")
+    for _ in range(CAPSOLVER_MAX_POLLS):
+        time.sleep(CAPSOLVER_POLL_INTERVAL)
+        try:
+            result_resp = requests.post(
+                f"{CAPSOLVER_API_URL}/getTaskResult",
+                json={"clientKey": capsolver_api_key, "taskId": task_id},
+                timeout=15,
+            )
+            result = result_resp.json()
+        except Exception as exc:
+            print(f"[WARN]  CapSolver poll failed: {exc}")
+            continue
+
+        status = result.get("status")
+        if status == "ready":
+            token = result.get("solution", {}).get("gRecaptchaResponse")
+            if token:
+                return token
+            print("[WARN]  CapSolver solution missing 'gRecaptchaResponse'.")
+            return None
+        if status == "failed":
+            print(f"[WARN]  CapSolver task failed: {result.get('errorDescription', 'unknown')}")
+            return None
+        # status == "processing" – keep polling
+
+    print("[WARN]  CapSolver CAPTCHA solving timed out.")
+    return None
+
+
 # ── Bot creator helpers ────────────────────────────────────────────────────────
 
 
-def create_application(token: str, name: str) -> dict:
-    """Create a new Discord application (and its bot user) with the given name."""
+def create_application(token: str, name: str, capsolver_key: str = "") -> dict:
+    """Create a new Discord application (and its bot user) with the given name.
+
+    If Discord returns a CAPTCHA challenge (HTTP 400 with
+    ``captcha_key: ['captcha-required']``) and a *capsolver_key* is provided,
+    the CAPTCHA is solved automatically via CapSolver and the request is
+    retried with the solved token.
+    """
     url = f"{BASE_URL}/applications"
     payload = {"name": name}
     response = requests.post(url, headers=get_headers(token), json=payload, timeout=10)
@@ -141,6 +235,39 @@ def create_application(token: str, name: str) -> dict:
         sys.exit(1)
 
     body = _safe_json(response)
+
+    # ── CAPTCHA challenge ──────────────────────────────────────────────────────
+    if (
+        response.status_code == 400
+        and isinstance(body, dict)
+        and "captcha-required" in body.get("captcha_key", [])
+    ):
+        print("[INFO] Discord requires a CAPTCHA to create the application.")
+
+        if not capsolver_key:
+            print(
+                "[ERROR] A CapSolver API key is required to solve the CAPTCHA.\n"
+                "        Get one at https://capsolver.com and re-run the script."
+            )
+            sys.exit(1)
+
+        sitekey = body.get("captcha_sitekey", "")
+        rqdata = body.get("captcha_rqdata", "")
+        rqtoken = body.get("captcha_rqtoken", "")
+
+        print("[INFO] Solving CAPTCHA via CapSolver …")
+        captcha_token = solve_hcaptcha(capsolver_key, sitekey, rqdata)
+
+        if not captcha_token:
+            print("[ERROR] Failed to solve CAPTCHA. Cannot create application.")
+            sys.exit(1)
+
+        print("[OK]    CAPTCHA solved. Retrying application creation …")
+        payload["captcha_key"] = captcha_token
+        payload["captcha_rqtoken"] = rqtoken
+        response = requests.post(url, headers=get_headers(token), json=payload, timeout=10)
+        body = _safe_json(response)
+
     if response.status_code not in (200, 201):
         msg = body.get("message", body) if isinstance(body, dict) else body
         print(f"[ERROR] Could not create application: HTTP {response.status_code}: {msg}")
@@ -274,6 +401,13 @@ def flow_create_bot(token: str) -> None:
     print("       Press Enter to skip token reset for all bots.")
     totp_key = input("Enter TOTP secret key (or press Enter to skip): ").strip()
 
+    # ── CapSolver API key (needed when Discord triggers a CAPTCHA) ─────────────
+    print("\n[INFO] Discord may require a CAPTCHA when creating new applications.")
+    print("       If triggered, a CapSolver API key is used to solve it automatically.")
+    print("       Get a free key at https://capsolver.com")
+    print("       Press Enter to skip (the script will abort if a CAPTCHA is required).")
+    capsolver_key = input("Enter CapSolver API key (or press Enter to skip): ").strip()
+
     # ── Optional guild ─────────────────────────────────────────────────────────
     add_to_guild = input("\nAdd each bot to a guild after creation? [y/N]: ").strip().lower()
     guild_id = ""
@@ -292,7 +426,7 @@ def flow_create_bot(token: str) -> None:
 
         # Step 1 – Create the application
         print(f"[INFO] Creating application …")
-        app = create_application(token, bot_name)
+        app = create_application(token, bot_name, capsolver_key)
         app_id = app.get("id", "")
         app_name = app.get("name", bot_name)
         print(f"[OK]    Created: {app_name} (ID: {app_id})")
