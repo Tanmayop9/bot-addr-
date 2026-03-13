@@ -2,10 +2,13 @@
 
 A Termux-friendly Discord bot utility — no browser required.
 
-Two features in one script:
+Three features in one script:
 1. **Add bots** – Add all Discord bots you own to a target guild.
 2. **Create bot** – Create a new bot application, enable all three privileged
    intents, reset its token using your MFA/auth key, and invite it to a guild.
+3. **Manage owned bots** – For every bot you own: enable all privileged intents,
+   reset the token (TOTP auto-generated), add it to a target guild, and save all
+   tokens to `tokens.txt` in one automated pass.
 
 ## Requirements
 
@@ -38,7 +41,8 @@ Enter your Discord token:
 What would you like to do?
   [1] Add all owned bots to a guild
   [2] Create a new bot (enable intents + reset token + invite)
-Enter choice [1/2, default: 1]:
+  [3] Manage all owned bots (enable intents + reset tokens + add to guild)
+Enter choice [1/2/3, default: 1]:
 ```
 
 ---
@@ -63,7 +67,7 @@ Steps performed:
 | `Enter the number of bots you wanna create:` | How many bot applications to create in this run | `1` |
 | `Enter a base name for the bot(s):` | Name given to every bot created in this run | – |
 | `Enter TOTP secret key:` | Your authenticator's base-32 secret key — the 6-digit code is generated automatically for each bot | skip |
-| `Enter Capsolver API key (or press Enter to skip):` | Optional: auto-solve CAPTCHA via Capsolver if it is still triggered despite curl_cffi | skip |
+| `Enter NopeCHA API key (or press Enter to skip):` | Optional: auto-solve CAPTCHA via NopeCHA if it is still triggered despite curl_cffi | skip |
 | `Add each bot to a guild after creation? [y/N]:` | Optionally auto-invite every created bot | N |
 | `Enter the target guild ID:` | (only if auto-invite chosen) | `293939939` |
 
@@ -73,8 +77,9 @@ Steps performed:
    a real Android `User-Agent` + `X-Super-Properties` header, which Discord
    treats as a legitimate browser client — CAPTCHA is not triggered.  
    If CAPTCHA is still triggered (rare), it is resolved via:
-   - **Capsolver** (optional) – provide a key and the challenge is solved silently.
-     Free tier at [capsolver.com](https://capsolver.com) — no credit card needed.
+   - **NopeCHA** (optional) – provide a free API key and the challenge is solved
+     silently.  Free tier at [nopecha.com](https://nopecha.com) — no credit card
+     needed.
    - **Manual** (fallback) – step-by-step instructions to use **Kiwi Browser**
      (Android browser with DevTools) to extract and paste the token; no PC needed.
 2. **Enable all three privileged gateway intents**:
@@ -88,6 +93,25 @@ Steps performed:
    The new token is printed once and saved to `tokens.txt` — keep both safe.
 4. **Invite URL** – Printed in plain text so you can copy it without a browser.
 5. Optionally **auto-add to a guild** using the same OAuth2 authorize endpoint.
+
+---
+
+### Option 3 – Manage all owned bots
+
+| Prompt | Description | Default |
+|--------|-------------|---------|
+| `Enter TOTP secret key:` | Your authenticator's base-32 secret key | – |
+| `Enter the target guild ID:` | The server to add every bot to | `1479676935683575960` |
+
+Steps performed for **each** bot you own:
+1. **Enable all three privileged gateway intents** (Presence, Guild Members,
+   Message Content).
+2. **Reset the bot token** using a freshly generated TOTP code — saved to
+   `tokens.txt` automatically.
+3. **Add to the target guild** with Administrator permissions.
+
+This is the fastest way to bulk-reset tokens and sync all your bots to a
+single server in one command.
 
 ---
 
@@ -110,7 +134,7 @@ Steps performed:
   Discord API calls also carry a realistic `User-Agent` and `X-Super-Properties`
   header (Chrome/Android) as an additional layer.
 - **CAPTCHA fallback** – If a challenge is still returned, the script can use
-  [Capsolver](https://capsolver.com) (optional API key, free tier — no credit
-  card) for automatic solving, or guide you through **Kiwi Browser** (Android
-  Chrome with DevTools) to extract and paste the token manually — no PC required.
+  [NopeCHA](https://nopecha.com) (optional API key, free tier — no credit card)
+  for automatic solving, or guide you through **Kiwi Browser** (Android Chrome
+  with DevTools) to extract and paste the token manually — no PC required.
 
