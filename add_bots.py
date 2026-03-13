@@ -185,45 +185,77 @@ def fetch_guild_bot_ids(token: str, guild_id: str) -> set[str]:
 
 
 def flow_add_bots(token: str) -> None:
-    """Add every owned bot to a target guild, skipping bots already present."""
+    """Add every owned bot to a target guild, skipping bots already present.
+
+    The three steps are performed in strict order:
+      1. Fetch all bot client IDs owned by the user.
+      2. Check which of those bots are already in the guild.
+      3. Add only the bots that are not yet in the guild.
+    """
     guild_id = input(
         f"Enter the target guild ID [default: {DEFAULT_GUILD}]: "
     ).strip()
     if not guild_id:
         guild_id = DEFAULT_GUILD
 
-    print("\n[INFO] Fetching applications owned by you …")
+    # ── Step 1: Fetch all bot client IDs ─────────────────────────────────────
+    print("\n[INFO] Step 1 — Fetching all bot client IDs owned by you …")
     apps = fetch_owned_applications(token)
 
     if not apps:
         print("[INFO] No owned applications found.")
         return
 
-    print(f"[INFO] Found {len(apps)} application(s).")
-    print(f"[INFO] Checking bots already in guild {guild_id} …")
+    # Build a mapping of client_id → app_name for easy lookup later.
+    all_bots: dict[str, str] = {
+        app["id"]: app.get("name", "unknown")
+        for app in apps
+        if app.get("id")
+    }
+    preview_ids = list(all_bots.keys())[:5]
+    suffix = f" … (+{len(all_bots) - 5} more)" if len(all_bots) > 5 else ""
+    print(f"[INFO] Found {len(all_bots)} bot client ID(s): {', '.join(preview_ids)}{suffix}")
+
+    # ── Step 2: Check which bots are already in the guild ────────────────────
+    print(f"\n[INFO] Step 2 — Checking which bots are already in guild {guild_id} …")
     existing_bot_ids = fetch_guild_bot_ids(token, guild_id)
     if existing_bot_ids:
         print(f"[INFO] {len(existing_bot_ids)} bot(s) already in guild — will be skipped.")
 
-    print(f"[INFO] Adding to guild {guild_id} with permissions={PERMISSIONS} …\n")
+    bots_to_add = {
+        client_id: name
+        for client_id, name in all_bots.items()
+        if client_id not in existing_bot_ids
+    }
+    already_in_guild = {
+        client_id: name
+        for client_id, name in all_bots.items()
+        if client_id in existing_bot_ids
+    }
 
-    for app in apps:
-        app_id = app.get("id", "unknown")
-        app_name = app.get("name", "unknown")
+    for client_id, name in already_in_guild.items():
+        print(f"[SKIP]  {name} ({client_id}) → already in guild.")
 
-        if app_id in existing_bot_ids:
-            print(f"[SKIP]  {app_name} ({app_id}) → already in guild.")
-            continue
+    if not bots_to_add:
+        print("\n[INFO] All bots are already in the guild. Nothing to add.")
+        return
 
-        result = authorize_bot(token, app_id, guild_id, PERMISSIONS)
+    # ── Step 3: Add bots that are not yet in the guild ───────────────────────
+    print(
+        f"\n[INFO] Step 3 — Adding {len(bots_to_add)} bot(s) to guild {guild_id} "
+        f"with permissions={PERMISSIONS} …\n"
+    )
+
+    for client_id, name in bots_to_add.items():
+        result = authorize_bot(token, client_id, guild_id, PERMISSIONS)
         status = result["status_code"]
         body = result["body"]
 
         if status == 200:
-            print(f"[OK]    {app_name} ({app_id}) → added successfully.")
+            print(f"[OK]    {name} ({client_id}) → added successfully.")
         else:
             error_msg = body.get("message", body) if isinstance(body, dict) else body
-            print(f"[FAIL]  {app_name} ({app_id}) → HTTP {status}: {error_msg}")
+            print(f"[FAIL]  {name} ({client_id}) → HTTP {status}: {error_msg}")
 
     print("\n[INFO] Done.")
 
