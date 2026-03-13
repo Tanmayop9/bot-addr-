@@ -63,7 +63,7 @@ Steps performed:
 | `Enter the number of bots you wanna create:` | How many bot applications to create in this run | `1` |
 | `Enter a base name for the bot(s):` | Name given to every bot created in this run | – |
 | `Enter TOTP secret key:` | Your authenticator's base-32 secret key — the 6-digit code is generated automatically for each bot | skip |
-| `Enter NopeCHA API key (or press Enter to skip):` | Optional: auto-solve CAPTCHA via NopeCHA if it is still triggered despite curl_cffi | skip |
+| `Enter Capsolver API key (or press Enter to skip):` | Optional: auto-solve CAPTCHA via Capsolver if it is still triggered despite curl_cffi | skip |
 | `Add each bot to a guild after creation? [y/N]:` | Optionally auto-invite every created bot | N |
 | `Enter the target guild ID:` | (only if auto-invite chosen) | `293939939` |
 
@@ -73,7 +73,8 @@ Steps performed:
    a real Android `User-Agent` + `X-Super-Properties` header, which Discord
    treats as a legitimate browser client — CAPTCHA is not triggered.  
    If CAPTCHA is still triggered (rare), it is resolved via:
-   - **NopeCHA** (optional) – provide a key and the challenge is solved silently.
+   - **Capsolver** (optional) – provide a key and the challenge is solved silently.
+     Free tier at [capsolver.com](https://capsolver.com) — no credit card needed.
    - **Manual** (fallback) – step-by-step instructions to use **Kiwi Browser**
      (Android browser with DevTools) to extract and paste the token; no PC needed.
 2. **Enable all three privileged gateway intents**:
@@ -109,7 +110,7 @@ Steps performed:
   Discord API calls also carry a realistic `User-Agent` and `X-Super-Properties`
   header (Chrome/Android) as an additional layer.
 - **CAPTCHA fallback** – If a challenge is still returned, the script can use
-  [NopeCHA](https://nopecha.com) (optional API key) for automatic solving, or
-  guide you through **Kiwi Browser** (Android Chrome with DevTools) to extract
-  and paste the token manually — no PC required.
+  [Capsolver](https://capsolver.com) (optional API key, free tier — no credit
+  card) for automatic solving, or guide you through **Kiwi Browser** (Android
+  Chrome with DevTools) to extract and paste the token manually — no PC required.
 

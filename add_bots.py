@@ -37,10 +37,9 @@ PERMISSIONS = 8   # Administrator
 BASE_URL = "https://discord.com/api/v10"
 DISCORD_BASE_URL = "https://discord.com"
 TOKEN_FILE = "tokens.txt"  # bot tokens are appended here after each reset
-NOPECHA_API_URL = "https://api.nopecha.com"
-NOPECHA_POLL_INTERVAL = 3    # seconds between each result poll
-NOPECHA_MAX_POLLS = 40       # maximum polls before giving up (~2 minutes total)
-NOPECHA_ERROR_NOT_READY = 9  # NopeCHA error code meaning the task is still processing
+CAPSOLVER_API_URL = "https://api.capsolver.com"
+CAPTCHA_POLL_INTERVAL = 3    # seconds between each result poll
+CAPTCHA_MAX_POLLS = 40       # maximum polls before giving up (~2 minutes total)
 
 # Privileged intent flag bits (Discord Gateway Intent flags)
 INTENT_PRESENCE        = 1 << 12   # 4096   – Presence Update intent
@@ -104,7 +103,7 @@ def _patch(url: str, **kwargs):
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
-def _safe_json(response) -> dict | list:
+def _safe_json(response: "requests.Response | object") -> dict | list:
     """Return parsed JSON, or a dict with an error message on failure."""
     content_type = response.headers.get("Content-Type", "")
     if "application/json" not in content_type:
@@ -249,15 +248,15 @@ def solve_hcaptcha_manual(sitekey: str) -> str | None:
     return token if token else None
 
 
-def solve_hcaptcha_nopecha(nopecha_key: str, sitekey: str, rqdata: str) -> str | None:
+def solve_hcaptcha_capsolver(capsolver_key: str, sitekey: str, rqdata: str) -> str | None:
     """
-    Solve a Discord hCaptcha Enterprise challenge via NopeCHA
-    (https://nopecha.com) — optional free-tier API, requires sign-up.
+    Solve a Discord hCaptcha Enterprise challenge via Capsolver
+    (https://capsolver.com) — free tier available, no credit card required.
 
     Parameters
     ----------
-    nopecha_key : str
-        Your NopeCHA API key.
+    capsolver_key : str
+        Your Capsolver API key (register free at https://capsolver.com).
     sitekey : str
         The ``captcha_sitekey`` value returned by Discord in the 400 response.
     rqdata : str
@@ -269,79 +268,83 @@ def solve_hcaptcha_nopecha(nopecha_key: str, sitekey: str, rqdata: str) -> str |
         The solved hCaptcha token, or ``None`` on failure.
     """
     task_payload = {
-        "key": nopecha_key,
-        "type": "hcaptcha",
-        "sitekey": sitekey,
-        "url": DISCORD_BASE_URL,
-        "data": rqdata,
+        "clientKey": capsolver_key,
+        "task": {
+            "type": "HCaptchaEnterpriseTaskProxyLess",
+            "websiteURL": DISCORD_BASE_URL,
+            "websiteKey": sitekey,
+            "enterprisePayload": {"rqdata": rqdata} if rqdata else {},
+        },
     }
 
+    # Capsolver is a third-party service — Chrome TLS impersonation is only
+    # needed for Discord's bot detection, so plain requests is correct here.
     try:
         resp = requests.post(
-            NOPECHA_API_URL,
+            f"{CAPSOLVER_API_URL}/createTask",
             json=task_payload,
             timeout=15,
         )
         data = resp.json()
     except Exception as exc:
-        print(f"[WARN]  NopeCHA task creation failed: {exc}")
+        print(f"[WARN]  Capsolver task creation failed: {exc}")
         return None
 
-    # NopeCHA returns {"error": 0, "data": "<task_id>"} on success.
-    if data.get("error", 0) != 0:
-        print(f"[WARN]  NopeCHA error {data.get('error')}: {data.get('message', 'unknown')}")
+    if data.get("errorId", 0) != 0:
+        print(f"[WARN]  Capsolver error {data.get('errorCode')}: {data.get('errorDescription', 'unknown')}")
         return None
 
-    task_id = data.get("data")
+    task_id = data.get("taskId")
     if not task_id:
-        print("[WARN]  NopeCHA returned no task ID.")
+        print("[WARN]  Capsolver returned no task ID.")
         return None
 
-    print("[INFO] Waiting for CAPTCHA solution …")
-    for _ in range(NOPECHA_MAX_POLLS):
-        time.sleep(NOPECHA_POLL_INTERVAL)
+    print("[INFO] Waiting for Capsolver CAPTCHA solution …")
+    for _ in range(CAPTCHA_MAX_POLLS):
+        time.sleep(CAPTCHA_POLL_INTERVAL)
         try:
-            result_resp = requests.get(
-                NOPECHA_API_URL,
-                params={"id": task_id, "key": nopecha_key},
+            result_resp = requests.post(
+                f"{CAPSOLVER_API_URL}/getTaskResult",
+                json={"clientKey": capsolver_key, "taskId": task_id},
                 timeout=15,
             )
             result = result_resp.json()
         except Exception as exc:
-            print(f"[WARN]  NopeCHA poll failed: {exc}")
+            print(f"[WARN]  Capsolver poll failed: {exc}")
             continue
 
-        error_code = result.get("error", 0)
-        if error_code == NOPECHA_ERROR_NOT_READY:
-            continue
-        if error_code != 0:
-            print(f"[WARN]  NopeCHA task failed (error {error_code}): {result.get('message', 'unknown')}")
+        if result.get("errorId", 0) != 0:
+            print(f"[WARN]  Capsolver task failed ({result.get('errorCode')}): {result.get('errorDescription', 'unknown')}")
             return None
 
-        token = result.get("data")
-        if token:
-            return token
-        print("[WARN]  NopeCHA solution missing token data.")
-        return None
+        status = result.get("status")
+        if status == "processing":
+            continue
+        if status == "ready":
+            token = result.get("solution", {}).get("gRecaptchaResponse")
+            if token:
+                return token
+            print("[WARN]  Capsolver solution missing token.")
+            return None
 
-    print("[WARN]  NopeCHA CAPTCHA solving timed out.")
+    print("[WARN]  Capsolver CAPTCHA solving timed out.")
     return None
 
 
 # ── Bot creator helpers ────────────────────────────────────────────────────────
 
 
-def create_application(token: str, name: str, nopecha_key: str | None = None) -> dict:
+def create_application(token: str, name: str, capsolver_key: str | None = None) -> dict:
     """Create a new Discord application (and its bot user) with the given name.
 
     If Discord returns a CAPTCHA challenge (HTTP 400 with
     ``captcha_key: ['captcha-required']``), the CAPTCHA is resolved via one
     of two methods:
 
-    * **Automatic** (optional) – if *nopecha_key* is provided the challenge is
-      solved via NopeCHA (https://nopecha.com) without any user interaction.
+    * **Automatic** (optional) – if *capsolver_key* is provided the challenge is
+      solved via Capsolver (https://capsolver.com) without any user interaction.
     * **Manual** (default, no signup needed) – the user is guided step-by-step
-      to solve the challenge in a browser and paste the resulting token back.
+      to solve the challenge in Kiwi Browser and paste the resulting token back.
     """
     url = f"{BASE_URL}/applications"
     payload = {"name": name}
@@ -365,11 +368,11 @@ def create_application(token: str, name: str, nopecha_key: str | None = None) ->
         rqdata = body.get("captcha_rqdata", "")
         rqtoken = body.get("captcha_rqtoken", "")
 
-        if nopecha_key is not None:
-            print("[INFO] Solving CAPTCHA automatically via NopeCHA …")
-            captcha_token = solve_hcaptcha_nopecha(nopecha_key, sitekey, rqdata)
+        if capsolver_key is not None:
+            print("[INFO] Solving CAPTCHA automatically via Capsolver …")
+            captcha_token = solve_hcaptcha_capsolver(capsolver_key, sitekey, rqdata)
             if not captcha_token:
-                print("[WARN]  NopeCHA failed. Falling back to manual solving …")
+                print("[WARN]  Capsolver failed. Falling back to manual solving …")
                 captcha_token = solve_hcaptcha_manual(sitekey)
         else:
             captcha_token = solve_hcaptcha_manual(sitekey)
@@ -517,7 +520,7 @@ def flow_create_bot(token: str) -> None:
     print("       Press Enter to skip token reset for all bots.")
     totp_key = input("Enter TOTP secret key (or press Enter to skip): ").strip()
 
-    # ── NopeCHA API key (optional automatic CAPTCHA solver) ───────────────────
+    # ── Capsolver API key (optional automatic CAPTCHA solver) ─────────────────
     print("\n[INFO] Discord may require a CAPTCHA when creating new applications.")
     if _CFFI_AVAILABLE:
         print("       curl_cffi is loaded — Chrome TLS fingerprint active.")
@@ -525,10 +528,11 @@ def flow_create_bot(token: str) -> None:
     else:
         print("       curl_cffi is NOT installed. CAPTCHA is more likely.")
         print("       Strongly recommended: pip install curl_cffi")
-    print("       Optional: provide a NopeCHA API key for automatic solving.")
+    print("       Optional: provide a Capsolver API key for automatic solving.")
+    print("       (Free tier at https://capsolver.com — no credit card needed.)")
     print("       Otherwise press Enter — manual instructions will appear if needed.")
-    nopecha_key_input = input("Enter NopeCHA API key (or press Enter to skip): ").strip()
-    nopecha_key = nopecha_key_input if nopecha_key_input else None
+    capsolver_key_input = input("Enter Capsolver API key (or press Enter to skip): ").strip()
+    capsolver_key = capsolver_key_input if capsolver_key_input else None
 
     # ── Optional guild ─────────────────────────────────────────────────────────
     add_to_guild = input("\nAdd each bot to a guild after creation? [y/N]: ").strip().lower()
@@ -548,7 +552,7 @@ def flow_create_bot(token: str) -> None:
 
         # Step 1 – Create the application
         print(f"[INFO] Creating application …")
-        app = create_application(token, bot_name, nopecha_key)
+        app = create_application(token, bot_name, capsolver_key)
         app_id = app.get("id", "")
         app_name = app.get("name", bot_name)
         print(f"[OK]    Created: {app_name} (ID: {app_id})")
