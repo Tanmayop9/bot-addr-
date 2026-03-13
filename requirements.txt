@@ -1,2 +1,7 @@
 requests>=2.28.0
 pyotp>=2.9.0
+# curl_cffi impersonates Chrome's TLS fingerprint — prevents Discord CAPTCHA
+# on Termux/Android without any browser or sign-up.  Install with:
+#   pip install curl_cffi
+# The script works without it but CAPTCHA is more likely.
+curl_cffi>=0.7.0

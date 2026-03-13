@@ -14,11 +14,22 @@ working directory so you never lose them.  All other credentials (Discord user
 token, MFA code) are kept only in memory for the duration of the script.
 """
 
+import base64
+import json as _json
 import sys
 import time
 
 import pyotp
 import requests
+
+# Optional: curl_cffi impersonates Chrome's TLS fingerprint so Discord does not
+# trigger a CAPTCHA challenge — works on Termux without any browser or sign-up.
+# Install once with:  pip install curl_cffi
+try:
+    from curl_cffi import requests as _cffi_requests
+    _CFFI_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _CFFI_AVAILABLE = False
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -37,10 +48,63 @@ INTENT_GUILD_MEMBERS   = 1 << 13   # 8192   – Server Members intent
 INTENT_MESSAGE_CONTENT = 1 << 15   # 32768  – Message Content intent
 ALL_PRIVILEGED_INTENTS = INTENT_PRESENCE | INTENT_GUILD_MEMBERS | INTENT_MESSAGE_CONTENT
 
+# curl_cffi impersonation target — matches Chrome 120 on Android
+_IMPERSONATE = "chrome120"
+
+# Browser-like identity appended to every Discord API request.
+# Presenting a realistic Chrome/Android fingerprint makes Discord much less
+# likely to issue a CAPTCHA — no browser or external service needed.
+_DISCORD_USER_AGENT = (
+    "Mozilla/5.0 (Linux; Android 10; K) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Mobile Safari/537.36"
+)
+_DISCORD_SUPER_PROPERTIES = base64.b64encode(
+    _json.dumps(
+        {
+            "os": "Android",
+            "browser": "Chrome",
+            "device": "Android",
+            "system_locale": "en-US",
+            "browser_user_agent": _DISCORD_USER_AGENT,
+            "browser_version": "120.0.0.0",
+            "os_version": "10",
+            "release_channel": "stable",
+            "client_build_number": 280369,
+            "client_event_source": None,
+        },
+        separators=(",", ":"),
+    ).encode()
+).decode()
+
+# ── HTTP helpers (curl_cffi when available, requests otherwise) ────────────────
+
+
+def _get(url: str, **kwargs):
+    """HTTP GET — uses curl_cffi Chrome impersonation when available."""
+    if _CFFI_AVAILABLE:
+        return _cffi_requests.get(url, impersonate=_IMPERSONATE, **kwargs)
+    return requests.get(url, **kwargs)
+
+
+def _post(url: str, **kwargs):
+    """HTTP POST — uses curl_cffi Chrome impersonation when available."""
+    if _CFFI_AVAILABLE:
+        return _cffi_requests.post(url, impersonate=_IMPERSONATE, **kwargs)
+    return requests.post(url, **kwargs)
+
+
+def _patch(url: str, **kwargs):
+    """HTTP PATCH — uses curl_cffi Chrome impersonation when available."""
+    if _CFFI_AVAILABLE:
+        return _cffi_requests.patch(url, impersonate=_IMPERSONATE, **kwargs)
+    return requests.patch(url, **kwargs)
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
-def _safe_json(response: requests.Response) -> dict | list:
+def _safe_json(response) -> dict | list:
     """Return parsed JSON, or a dict with an error message on failure."""
     content_type = response.headers.get("Content-Type", "")
     if "application/json" not in content_type:
@@ -56,6 +120,9 @@ def get_headers(token: str, mfa_code: str = "") -> dict:
     headers = {
         "Authorization": token,
         "Content-Type": "application/json",
+        "User-Agent": _DISCORD_USER_AGENT,
+        "X-Super-Properties": _DISCORD_SUPER_PROPERTIES,
+        "X-Discord-Locale": "en-US",
     }
     if mfa_code:
         headers["X-Discord-MFA-Authorization"] = mfa_code
@@ -66,7 +133,7 @@ def fetch_owned_applications(token: str) -> list[dict]:
     """Return a list of application objects owned by the authenticated user."""
     url = f"{BASE_URL}/applications"
     params = {"with_team_applications": "false"}
-    response = requests.get(url, headers=get_headers(token), params=params, timeout=10)
+    response = _get(url, headers=get_headers(token), params=params, timeout=10)
 
     if response.status_code == 401:
         print("[ERROR] Invalid or expired Discord token.")
@@ -102,7 +169,7 @@ def authorize_bot(token: str, client_id: str, guild_id: str, permissions: int) -
         "permissions": str(permissions),
     }
 
-    response = requests.post(
+    response = _post(
         url,
         headers=get_headers(token),
         params=params,
@@ -138,8 +205,9 @@ def totp_code_from_key(secret_key: str) -> str:
 
 def solve_hcaptcha_manual(sitekey: str) -> str | None:
     """
-    Guide the user to solve the hCaptcha challenge manually in a browser
-    and paste the resulting token back — completely free, no signup needed.
+    Guide the user to solve the hCaptcha challenge and paste the token back.
+    Works on Android / Termux using Kiwi Browser (which has DevTools support).
+    No sign-up, no API key, no PC needed.
 
     Parameters
     ----------
@@ -153,23 +221,27 @@ def solve_hcaptcha_manual(sitekey: str) -> str | None:
     """
     print()
     print("╔══════════════════════════════════════════════════════════════════╗")
-    print("║              MANUAL CAPTCHA SOLVE  (free, no sign-up)           ║")
+    print("║          MANUAL CAPTCHA SOLVE — Android / Termux guide          ║")
     print("╠══════════════════════════════════════════════════════════════════╣")
-    print("║  Discord requires a CAPTCHA. Follow these steps:                ║")
+    print("║  TIP: install curl_cffi to skip this entirely next time:        ║")
+    print("║        pip install curl_cffi                                     ║")
+    print("╠══════════════════════════════════════════════════════════════════╣")
+    print("║  Right now, follow these steps on your Android device:          ║")
     print("║                                                                  ║")
-    print("║  1. Open this URL in any browser (desktop or mobile):           ║")
-    print(f"║     https://discord.com/developers/applications/new             ║")
+    print("║  1. Install Kiwi Browser from the Play Store.                   ║")
+    print("║     (It is the only Android browser with DevTools support.)     ║")
     print("║                                                                  ║")
-    print("║  2. Open Browser DevTools → Network tab (F12 on desktop).       ║")
+    print("║  2. Open Kiwi and go to:                                        ║")
+    print("║        https://discord.com/developers/applications/new          ║")
     print("║                                                                  ║")
-    print("║  3. Fill in any app name and click Create.                       ║")
-    print("║     If a CAPTCHA appears, solve it.                              ║")
+    print("║  3. Tap the Kiwi menu (⋮) → 'Developer tools' → Network tab.   ║")
     print("║                                                                  ║")
-    print("║  4. In the Network tab, find the request to:                     ║")
-    print("║        POST /api/v10/applications                               ║")
-    print("║     Open its Payload/Body. Copy the value of 'captcha_key'.     ║")
+    print("║  4. Type any app name, tap Create, then solve the CAPTCHA.      ║")
     print("║                                                                  ║")
-    print("║  5. Paste it below and press Enter.                              ║")
+    print("║  5. In the Network tab find POST /api/v10/applications.         ║")
+    print("║     Tap it → Payload. Copy the 'captcha_key' value.             ║")
+    print("║                                                                  ║")
+    print("║  6. Paste it below and press Enter.                              ║")
     print("╚══════════════════════════════════════════════════════════════════╝")
     print(f"[INFO] Expected sitekey: {sitekey}")
     print()
@@ -273,7 +345,7 @@ def create_application(token: str, name: str, nopecha_key: str | None = None) ->
     """
     url = f"{BASE_URL}/applications"
     payload = {"name": name}
-    response = requests.post(url, headers=get_headers(token), json=payload, timeout=10)
+    response = _post(url, headers=get_headers(token), json=payload, timeout=10)
 
     if response.status_code == 401:
         print("[ERROR] Invalid or expired Discord token.")
@@ -309,7 +381,7 @@ def create_application(token: str, name: str, nopecha_key: str | None = None) ->
         print("[OK]    CAPTCHA token received. Retrying application creation …")
         payload["captcha_key"] = captcha_token
         payload["captcha_rqtoken"] = rqtoken
-        response = requests.post(url, headers=get_headers(token), json=payload, timeout=10)
+        response = _post(url, headers=get_headers(token), json=payload, timeout=10)
         body = _safe_json(response)
 
     if response.status_code not in (200, 201):
@@ -329,7 +401,7 @@ def enable_all_intents(token: str, app_id: str) -> None:
     """
     url = f"{BASE_URL}/applications/{app_id}/bot"
     payload = {"flags": ALL_PRIVILEGED_INTENTS}
-    response = requests.patch(url, headers=get_headers(token), json=payload, timeout=10)
+    response = _patch(url, headers=get_headers(token), json=payload, timeout=10)
 
     body = _safe_json(response)
     if response.status_code not in (200, 204):
@@ -348,7 +420,7 @@ def reset_bot_token(token: str, app_id: str, mfa_code: str) -> str | None:
     or None on failure.
     """
     url = f"{BASE_URL}/applications/{app_id}/bot/reset"
-    response = requests.post(
+    response = _post(
         url,
         headers=get_headers(token, mfa_code=mfa_code),
         json={},
@@ -447,11 +519,15 @@ def flow_create_bot(token: str) -> None:
 
     # ── NopeCHA API key (optional automatic CAPTCHA solver) ───────────────────
     print("\n[INFO] Discord may require a CAPTCHA when creating new applications.")
-    print("       Two modes are available:")
-    print("         AUTOMATIC – provide a NopeCHA API key (free at https://nopecha.com).")
-    print("         MANUAL    – press Enter; if a CAPTCHA appears you will be guided")
-    print("                     through solving it in your browser and pasting the token.")
-    nopecha_key_input = input("Enter NopeCHA API key (or press Enter for manual mode): ").strip()
+    if _CFFI_AVAILABLE:
+        print("       curl_cffi is loaded — Chrome TLS fingerprint active.")
+        print("       CAPTCHA is very unlikely. No key needed in most cases.")
+    else:
+        print("       curl_cffi is NOT installed. CAPTCHA is more likely.")
+        print("       Strongly recommended: pip install curl_cffi")
+    print("       Optional: provide a NopeCHA API key for automatic solving.")
+    print("       Otherwise press Enter — manual instructions will appear if needed.")
+    nopecha_key_input = input("Enter NopeCHA API key (or press Enter to skip): ").strip()
     nopecha_key = nopecha_key_input if nopecha_key_input else None
 
     # ── Optional guild ─────────────────────────────────────────────────────────
@@ -528,6 +604,13 @@ def flow_create_bot(token: str) -> None:
 
 def main() -> None:
     import getpass
+
+    # ── TLS bypass status ──────────────────────────────────────────────────────
+    if _CFFI_AVAILABLE:
+        print("[INFO] curl_cffi active — Chrome TLS fingerprint (CAPTCHA bypass on).")
+    else:
+        print("[WARN] curl_cffi not installed. Discord may require a CAPTCHA.")
+        print("       Fix: pip install curl_cffi")
 
     # ── Prompt for credentials (nothing stored) ────────────────────────────────
     token = getpass.getpass("Enter your Discord token: ").strip()

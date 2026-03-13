@@ -10,11 +10,16 @@ Two features in one script:
 ## Requirements
 
 - Python 3.10+
-- `requests` library
+- `requests`, `pyotp`, `curl_cffi` libraries
 
 ```bash
 pip install -r requirements.txt
 ```
+
+`curl_cffi` is the key dependency for Termux users — it makes the script
+impersonate Chrome's TLS fingerprint so Discord does **not** trigger a CAPTCHA
+in the first place.  The script still works without it, but CAPTCHA is more
+likely.
 
 ## Usage
 
@@ -22,10 +27,14 @@ pip install -r requirements.txt
 python add_bots.py
 ```
 
-On startup the script asks for your **Discord user token** (hidden input, never
-stored), then presents a menu:
+On startup the script prints whether the Chrome TLS bypass is active, then
+asks for your **Discord user token** (hidden input, never stored) and presents
+a menu:
 
 ```
+[INFO] curl_cffi active — Chrome TLS fingerprint (CAPTCHA bypass on).
+Enter your Discord token:
+
 What would you like to do?
   [1] Add all owned bots to a guild
   [2] Create a new bot (enable intents + reset token + invite)
@@ -54,18 +63,19 @@ Steps performed:
 | `Enter the number of bots you wanna create:` | How many bot applications to create in this run | `1` |
 | `Enter a base name for the bot(s):` | Name given to every bot created in this run | – |
 | `Enter TOTP secret key:` | Your authenticator's base-32 secret key — the 6-digit code is generated automatically for each bot | skip |
-| `Enter NopeCHA API key (or press Enter for manual mode):` | Optional: auto-solve CAPTCHA via NopeCHA (free at [nopecha.com](https://nopecha.com)). Press Enter to use **manual solving** — completely free, no signup needed | manual mode |
+| `Enter NopeCHA API key (or press Enter to skip):` | Optional: auto-solve CAPTCHA via NopeCHA if it is still triggered despite curl_cffi | skip |
 | `Add each bot to a guild after creation? [y/N]:` | Optionally auto-invite every created bot | N |
 | `Enter the target guild ID:` | (only if auto-invite chosen) | `293939939` |
 
 Steps performed:
 1. **Create application** – `POST /applications`.  
-   If Discord returns a CAPTCHA challenge (HTTP 400 with
-   `captcha_key: ['captcha-required']`), it is resolved via one of two modes:
-   - **Automatic** (optional) – provide a NopeCHA API key and the script
-     solves the challenge silently. If NopeCHA fails it falls back to manual.
-   - **Manual** (default, free, no signup) – the script prints step-by-step
-     browser instructions, you solve the challenge, and paste the token back.
+   With `curl_cffi` loaded, requests are sent with Chrome's TLS fingerprint and
+   a real Android `User-Agent` + `X-Super-Properties` header, which Discord
+   treats as a legitimate browser client — CAPTCHA is not triggered.  
+   If CAPTCHA is still triggered (rare), it is resolved via:
+   - **NopeCHA** (optional) – provide a key and the challenge is solved silently.
+   - **Manual** (fallback) – step-by-step instructions to use **Kiwi Browser**
+     (Android browser with DevTools) to extract and paste the token; no PC needed.
 2. **Enable all three privileged gateway intents**:
    - Presence Update intent (bit 12)
    - Server Members intent (bit 13)
@@ -93,13 +103,13 @@ Steps performed:
   you first set up 2FA, e.g. `354n6cs4ptulgduoimkczgz72uv2wh3w`). The script
   uses `pyotp` to derive the current 6-digit code automatically — no
   authenticator app needed at runtime.
-- **CAPTCHA handling** – Discord may return an `HTTP 400` CAPTCHA challenge
-  (`captcha_key: ['captcha-required']`) when creating a new application.
-  The script supports two modes:
-  - **Manual mode (default)** – No API key or signup required. The script
-    prints browser instructions, you solve the hCaptcha, and paste the token
-    back into the terminal. Works on any device, completely free.
-  - **Automatic mode (optional)** – Provide a [NopeCHA](https://nopecha.com)
-    API key to have the CAPTCHA solved automatically. NopeCHA offers a free
-    tier (register at nopecha.com). If NopeCHA fails for any reason, the
-    script automatically falls back to manual mode.
+- **CAPTCHA prevention (Termux/Android)** – The primary defence is `curl_cffi`
+  (`pip install curl_cffi`) which makes every request look like Chrome 120 at
+  the TLS layer.  This eliminates CAPTCHA for the vast majority of users.  All
+  Discord API calls also carry a realistic `User-Agent` and `X-Super-Properties`
+  header (Chrome/Android) as an additional layer.
+- **CAPTCHA fallback** – If a challenge is still returned, the script can use
+  [NopeCHA](https://nopecha.com) (optional API key) for automatic solving, or
+  guide you through **Kiwi Browser** (Android Chrome with DevTools) to extract
+  and paste the token manually — no PC required.
+
