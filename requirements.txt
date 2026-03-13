@@ -5,3 +5,8 @@ pyotp>=2.9.0
 #   pip install curl_cffi
 # The script works without it but CAPTCHA is more likely.
 curl_cffi>=0.7.0
+# nopecha is an optional free CAPTCHA solver (free tier, no credit card).
+# Used as automatic fallback when curl_cffi doesn't prevent the challenge.
+# Install with:
+#   pip install nopecha
+# Leave blank at the prompt to use manual solving instead.
