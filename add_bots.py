@@ -136,15 +136,56 @@ def totp_code_from_key(secret_key: str) -> str:
 # ── CAPTCHA solver ─────────────────────────────────────────────────────────────
 
 
-def solve_hcaptcha(nopecha_key: str, sitekey: str, rqdata: str) -> str | None:
+def solve_hcaptcha_manual(sitekey: str) -> str | None:
+    """
+    Guide the user to solve the hCaptcha challenge manually in a browser
+    and paste the resulting token back — completely free, no signup needed.
+
+    Parameters
+    ----------
+    sitekey : str
+        The ``captcha_sitekey`` value returned by Discord in the 400 response.
+
+    Returns
+    -------
+    str | None
+        The hCaptcha response token pasted by the user, or ``None`` if skipped.
+    """
+    print()
+    print("╔══════════════════════════════════════════════════════════════════╗")
+    print("║              MANUAL CAPTCHA SOLVE  (free, no sign-up)           ║")
+    print("╠══════════════════════════════════════════════════════════════════╣")
+    print("║  Discord requires a CAPTCHA. Follow these steps:                ║")
+    print("║                                                                  ║")
+    print("║  1. Open this URL in any browser (desktop or mobile):           ║")
+    print(f"║     https://discord.com/developers/applications/new             ║")
+    print("║                                                                  ║")
+    print("║  2. Open Browser DevTools → Network tab (F12 on desktop).       ║")
+    print("║                                                                  ║")
+    print("║  3. Fill in any app name and click Create.                       ║")
+    print("║     If a CAPTCHA appears, solve it.                              ║")
+    print("║                                                                  ║")
+    print("║  4. In the Network tab, find the request to:                     ║")
+    print("║        POST /api/v10/applications                               ║")
+    print("║     Open its Payload/Body. Copy the value of 'captcha_key'.     ║")
+    print("║                                                                  ║")
+    print("║  5. Paste it below and press Enter.                              ║")
+    print("╚══════════════════════════════════════════════════════════════════╝")
+    print(f"[INFO] Expected sitekey: {sitekey}")
+    print()
+    token = input("Paste hCaptcha token here (or press Enter to skip): ").strip()
+    return token if token else None
+
+
+def solve_hcaptcha_nopecha(nopecha_key: str, sitekey: str, rqdata: str) -> str | None:
     """
     Solve a Discord hCaptcha Enterprise challenge via NopeCHA
-    (https://nopecha.com) — free tier available, no payment required.
+    (https://nopecha.com) — optional free-tier API, requires sign-up.
 
     Parameters
     ----------
     nopecha_key : str
-        Your NopeCHA API key (free at https://nopecha.com).
+        Your NopeCHA API key.
     sitekey : str
         The ``captcha_sitekey`` value returned by Discord in the 400 response.
     rqdata : str
@@ -222,9 +263,13 @@ def create_application(token: str, name: str, nopecha_key: str | None = None) ->
     """Create a new Discord application (and its bot user) with the given name.
 
     If Discord returns a CAPTCHA challenge (HTTP 400 with
-    ``captcha_key: ['captcha-required']``) and a *nopecha_key* is provided,
-    the CAPTCHA is solved automatically via NopeCHA (free tier) and the
-    request is retried with the solved token.
+    ``captcha_key: ['captcha-required']``), the CAPTCHA is resolved via one
+    of two methods:
+
+    * **Automatic** (optional) – if *nopecha_key* is provided the challenge is
+      solved via NopeCHA (https://nopecha.com) without any user interaction.
+    * **Manual** (default, no signup needed) – the user is guided step-by-step
+      to solve the challenge in a browser and paste the resulting token back.
     """
     url = f"{BASE_URL}/applications"
     payload = {"name": name}
@@ -244,25 +289,24 @@ def create_application(token: str, name: str, nopecha_key: str | None = None) ->
     ):
         print("[INFO] Discord requires a CAPTCHA to create the application.")
 
-        if nopecha_key is None:
-            print(
-                "[ERROR] A NopeCHA API key is required to solve the CAPTCHA.\n"
-                "        Get a free key at https://nopecha.com and re-run the script."
-            )
-            sys.exit(1)
-
         sitekey = body.get("captcha_sitekey", "")
         rqdata = body.get("captcha_rqdata", "")
         rqtoken = body.get("captcha_rqtoken", "")
 
-        print("[INFO] Solving CAPTCHA via NopeCHA …")
-        captcha_token = solve_hcaptcha(nopecha_key, sitekey, rqdata)
+        if nopecha_key is not None:
+            print("[INFO] Solving CAPTCHA automatically via NopeCHA …")
+            captcha_token = solve_hcaptcha_nopecha(nopecha_key, sitekey, rqdata)
+            if not captcha_token:
+                print("[WARN]  NopeCHA failed. Falling back to manual solving …")
+                captcha_token = solve_hcaptcha_manual(sitekey)
+        else:
+            captcha_token = solve_hcaptcha_manual(sitekey)
 
         if not captcha_token:
-            print("[ERROR] Failed to solve CAPTCHA. Cannot create application.")
+            print("[ERROR] No CAPTCHA token provided. Cannot create application.")
             sys.exit(1)
 
-        print("[OK]    CAPTCHA solved. Retrying application creation …")
+        print("[OK]    CAPTCHA token received. Retrying application creation …")
         payload["captcha_key"] = captcha_token
         payload["captcha_rqtoken"] = rqtoken
         response = requests.post(url, headers=get_headers(token), json=payload, timeout=10)
@@ -401,12 +445,13 @@ def flow_create_bot(token: str) -> None:
     print("       Press Enter to skip token reset for all bots.")
     totp_key = input("Enter TOTP secret key (or press Enter to skip): ").strip()
 
-    # ── NopeCHA API key (needed when Discord triggers a CAPTCHA) ──────────────
+    # ── NopeCHA API key (optional automatic CAPTCHA solver) ───────────────────
     print("\n[INFO] Discord may require a CAPTCHA when creating new applications.")
-    print("       If triggered, a NopeCHA API key is used to solve it automatically.")
-    print("       NopeCHA is FREE — get your key at https://nopecha.com (no payment needed).")
-    print("       Press Enter to skip (the script will abort if a CAPTCHA is required).")
-    nopecha_key_input = input("Enter NopeCHA API key (or press Enter to skip): ").strip()
+    print("       Two modes are available:")
+    print("         AUTOMATIC – provide a NopeCHA API key (free at https://nopecha.com).")
+    print("         MANUAL    – press Enter; if a CAPTCHA appears you will be guided")
+    print("                     through solving it in your browser and pasting the token.")
+    nopecha_key_input = input("Enter NopeCHA API key (or press Enter for manual mode): ").strip()
     nopecha_key = nopecha_key_input if nopecha_key_input else None
 
     # ── Optional guild ─────────────────────────────────────────────────────────

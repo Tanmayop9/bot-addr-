@@ -1,6 +1,6 @@
 # bot-addr-
 
-A Termux-friendly Discord bot utility — no browser, no CAPTCHA.
+A Termux-friendly Discord bot utility — no browser required.
 
 Two features in one script:
 1. **Add bots** – Add all Discord bots you own to a target guild.
@@ -47,22 +47,25 @@ Steps performed:
 
 ---
 
-### Option 2 – Create a new bot (Termux-friendly, no CAPTCHA)
+### Option 2 – Create a new bot
 
 | Prompt | Description | Default |
 |--------|-------------|---------|
 | `Enter the number of bots you wanna create:` | How many bot applications to create in this run | `1` |
 | `Enter a base name for the bot(s):` | Name given to every bot created in this run | – |
 | `Enter TOTP secret key:` | Your authenticator's base-32 secret key — the 6-digit code is generated automatically for each bot | skip |
-| `Enter NopeCHA API key:` | **Free** NopeCHA API key used to automatically solve Discord's hCaptcha if triggered. Get one at [nopecha.com](https://nopecha.com) — no payment required | skip |
+| `Enter NopeCHA API key (or press Enter for manual mode):` | Optional: auto-solve CAPTCHA via NopeCHA (free at [nopecha.com](https://nopecha.com)). Press Enter to use **manual solving** — completely free, no signup needed | manual mode |
 | `Add each bot to a guild after creation? [y/N]:` | Optionally auto-invite every created bot | N |
 | `Enter the target guild ID:` | (only if auto-invite chosen) | `293939939` |
 
 Steps performed:
 1. **Create application** – `POST /applications`.  
    If Discord returns a CAPTCHA challenge (HTTP 400 with
-   `captcha_key: ['captcha-required']`), the script automatically solves it
-   via **NopeCHA** (free, no payment) and retries the request.
+   `captcha_key: ['captcha-required']`), it is resolved via one of two modes:
+   - **Automatic** (optional) – provide a NopeCHA API key and the script
+     solves the challenge silently. If NopeCHA fails it falls back to manual.
+   - **Manual** (default, free, no signup) – the script prints step-by-step
+     browser instructions, you solve the challenge, and paste the token back.
 2. **Enable all three privileged gateway intents**:
    - Presence Update intent (bit 12)
    - Server Members intent (bit 13)
@@ -92,8 +95,11 @@ Steps performed:
   authenticator app needed at runtime.
 - **CAPTCHA handling** – Discord may return an `HTTP 400` CAPTCHA challenge
   (`captcha_key: ['captcha-required']`) when creating a new application.
-  The script resolves this automatically using
-  [NopeCHA](https://nopecha.com) — a **free** hCaptcha solver (500
-  solves/month on the free tier, no credit card required).  You need a
-  NopeCHA API key (register at nopecha.com).  If no key is provided and
-  Discord triggers a CAPTCHA, the script will print a clear error and exit.
+  The script supports two modes:
+  - **Manual mode (default)** – No API key or signup required. The script
+    prints browser instructions, you solve the hCaptcha, and paste the token
+    back into the terminal. Works on any device, completely free.
+  - **Automatic mode (optional)** – Provide a [NopeCHA](https://nopecha.com)
+    API key to have the CAPTCHA solved automatically. NopeCHA offers a free
+    tier (register at nopecha.com). If NopeCHA fails for any reason, the
+    script automatically falls back to manual mode.
