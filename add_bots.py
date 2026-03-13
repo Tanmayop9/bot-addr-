@@ -263,19 +263,42 @@ def flow_add_bots(token: str) -> None:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 
-def main() -> None:
-    import getpass
+def load_first_token(path: str = "tokens.txt") -> str:
+    """Read *path* and return the first non-empty line as the token.
 
+    Args:
+        path: Path to the tokens file (one token per line). Defaults to
+              ``tokens.txt`` in the current working directory.
+
+    Returns:
+        The first non-empty, stripped line found in the file.
+
+    Exits:
+        Calls ``sys.exit(1)`` when the file is missing or contains no
+        non-empty lines.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                token = line.strip()
+                if token:
+                    return token
+    except FileNotFoundError:
+        print(f"[ERROR] {path} not found. Create the file with one token per line.")
+        sys.exit(1)
+    print(f"[ERROR] No tokens found in {path}. Add one token per line and re-run.")
+    sys.exit(1)
+
+
+def main() -> None:
     if _CFFI_AVAILABLE:
         print("[INFO] curl_cffi active — Chrome TLS fingerprint (CAPTCHA bypass on).")
     else:
         print("[WARN] curl_cffi not installed. Discord may require a CAPTCHA.")
         print("       Fix: pip install curl_cffi")
 
-    token = getpass.getpass("Enter your Discord token: ").strip()
-    if not token:
-        print("[ERROR] Token cannot be empty.")
-        sys.exit(1)
+    token = load_first_token()
+    print("[INFO] Using first token from tokens.txt.")
 
     flow_add_bots(token)
 
