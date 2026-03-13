@@ -449,49 +449,90 @@ def _exchange_totp_for_mfa_token(user_token: str, totp_code: str, ticket: str) -
     return None
 
 
-def reset_bot_token(token: str, app_id: str, mfa_code: str) -> str | None:
+def reset_bot_token(token: str, app_id: str, totp_key: str) -> str | None:
     """
     Reset (regenerate) the bot token for *app_id*.
 
     Discord requires MFA authorization for this operation.  The function
-    attempts two strategies in order:
+    attempts every known strategy in order, generating a fresh TOTP code for
+    each attempt so that a window-boundary expiry never causes a silent failure:
 
-    1. **Direct TOTP** – pass the 6-digit TOTP code straight in the
-       ``X-Discord-MFA-Authorization`` header.  This works when Discord
-       accepts the raw code without issuing a separate challenge.
-    2. **Ticket flow** – if Discord responds with HTTP 401 and includes a
-       challenge ``ticket`` in the response body, that ticket is exchanged
-       for a short-lived MFA authorization token via
-       ``POST /auth/mfa/totp``; the token is then used as the header value
-       for a second attempt at the reset.
+    1. **Challenge-first flow** – call the endpoint *without* any MFA header to
+       trigger Discord's challenge; Discord returns HTTP 401 with a short-lived
+       ``ticket``.  That ticket is exchanged for an MFA authorization token via
+       ``POST /auth/mfa/totp`` and the reset is retried with the MFA token.
+    2. **Direct TOTP** – pass the 6-digit TOTP code straight in the
+       ``X-Discord-MFA-Authorization`` header.  This succeeds on some Discord
+       API versions that accept a raw code without issuing a challenge first.
+    3. **Ticket flow from direct attempt** – if the direct-TOTP attempt itself
+       returns a ``ticket`` in the 401 body, that ticket is exchanged for an MFA
+       token and the reset is retried one final time.
 
     Returns the new bot token string on success, or ``None`` on failure.
     """
     url = f"{BASE_URL}/applications/{app_id}/bot/reset"
 
-    # Attempt 1: pass the TOTP code directly as the MFA header value.
-    response = _post(
-        url,
-        headers=get_headers(token, mfa_code=mfa_code),
-        json={},
-        timeout=10,
-    )
+    # ── Strategy 1: no-MFA challenge → ticket → MFA token → reset ─────────────
+    # Call without any MFA header so Discord issues a fresh challenge ticket.
+    response = _post(url, headers=get_headers(token), json={}, timeout=10)
     body = _safe_json(response)
 
-    # Attempt 2: if Discord issued a challenge ticket in the 401 response,
-    # exchange (ticket + TOTP code) → MFA token and retry.
     if response.status_code == 401 and isinstance(body, dict):
         ticket = body.get("ticket")
         if ticket:
-            mfa_auth_token = _exchange_totp_for_mfa_token(token, mfa_code, ticket)
-            if mfa_auth_token:
-                response = _post(
-                    url,
-                    headers=get_headers(token, mfa_code=mfa_auth_token),
-                    json={},
-                    timeout=10,
-                )
-                body = _safe_json(response)
+            try:
+                mfa_code = totp_code_from_key(totp_key)
+            except Exception as exc:
+                print(f"[WARN]  Could not generate TOTP code (strategy 1): {exc}")
+            else:
+                mfa_auth_token = _exchange_totp_for_mfa_token(token, mfa_code, ticket)
+                if mfa_auth_token:
+                    response = _post(
+                        url,
+                        headers=get_headers(token, mfa_code=mfa_auth_token),
+                        json={},
+                        timeout=10,
+                    )
+                    body = _safe_json(response)
+                    if response.status_code == 200 and isinstance(body, dict) and "token" in body:
+                        return body["token"]
+
+    # ── Strategy 2: direct TOTP code in the MFA header ────────────────────────
+    # Generate a fresh code in case the TOTP window has advanced.
+    try:
+        mfa_code = totp_code_from_key(totp_key)
+    except Exception as exc:
+        print(f"[WARN]  Could not generate TOTP code (strategy 2): {exc}")
+        mfa_code = None
+
+    if mfa_code:
+        response = _post(
+            url,
+            headers=get_headers(token, mfa_code=mfa_code),
+            json={},
+            timeout=10,
+        )
+        body = _safe_json(response)
+
+        # ── Strategy 3: ticket issued during direct-TOTP attempt → exchange → retry
+        if response.status_code == 401 and isinstance(body, dict):
+            ticket = body.get("ticket")
+            if ticket:
+                try:
+                    mfa_code = totp_code_from_key(totp_key)
+                except Exception as exc:
+                    print(f"[WARN]  Could not generate TOTP code (strategy 3): {exc}")
+                    mfa_code = None
+                if mfa_code:
+                    mfa_auth_token = _exchange_totp_for_mfa_token(token, mfa_code, ticket)
+                    if mfa_auth_token:
+                        response = _post(
+                            url,
+                            headers=get_headers(token, mfa_code=mfa_auth_token),
+                            json={},
+                            timeout=10,
+                        )
+                        body = _safe_json(response)
 
     if response.status_code == 200 and isinstance(body, dict) and "token" in body:
         return body["token"]
@@ -623,23 +664,21 @@ def flow_create_bot(token: str) -> None:
         print("[INFO] Enabling all three privileged gateway intents …")
         enable_all_intents(token, app_id)
 
-        # Step 3 – Reset token using a freshly generated TOTP code
+        # Step 3 – Reset token using TOTP key (fresh code generated internally)
         if totp_key:
+            print("[INFO] Resetting bot token …")
             try:
-                mfa_code = totp_code_from_key(totp_key)
+                new_token = reset_bot_token(token, app_id, totp_key)
             except Exception as exc:
-                print(f"[ERROR] Could not generate TOTP code: {exc}")
+                print(f"[ERROR] Could not reset bot token: {exc}")
                 print("[INFO]  Skipped token reset for this bot.")
+                new_token = None
+            if new_token:
+                print(f"[OK]    Bot token: {new_token}")
+                print("[WARN]  Keep this token secret — treat it like a password!")
+                save_token(app_name, app_id, new_token)
             else:
-                print(f"[INFO] Generated MFA code: {mfa_code}")
-                print("[INFO] Resetting bot token …")
-                new_token = reset_bot_token(token, app_id, mfa_code)
-                if new_token:
-                    print(f"[OK]    Bot token: {new_token}")
-                    print("[WARN]  Keep this token secret — treat it like a password!")
-                    save_token(app_name, app_id, new_token)
-                else:
-                    print("[INFO]  Token not retrieved. Reset it later in the Developer Portal.")
+                print("[INFO]  Token not retrieved. Reset it later in the Developer Portal.")
         else:
             print("[INFO]  Skipped token reset.")
 
@@ -719,18 +758,15 @@ def flow_manage_owned_bots(token: str) -> None:
         print("[INFO] Enabling all three privileged gateway intents …")
         enable_all_intents(token, app_id)
 
-        # Step 2 – Reset token using a fresh TOTP code
+        # Step 2 – Reset token using TOTP key (fresh code generated internally)
+        print("[INFO] Resetting bot token …")
         try:
-            mfa_code = totp_code_from_key(totp_key)
+            new_token = reset_bot_token(token, app_id, totp_key)
         except Exception as exc:
-            print(f"[ERROR] Could not generate TOTP code: {exc}")
+            print(f"[ERROR] Could not reset bot token: {exc}")
             print("[INFO]  Skipped — token not reset for this bot.")
             print()
             continue
-
-        print(f"[INFO] Generated MFA code: {mfa_code}")
-        print("[INFO] Resetting bot token …")
-        new_token = reset_bot_token(token, app_id, mfa_code)
 
         if new_token:
             print(f"[OK]    Bot token: {new_token}")
