@@ -410,23 +410,89 @@ def enable_all_intents(token: str, app_id: str) -> None:
         print("[OK]    All three privileged intents enabled.")
 
 
+def _exchange_totp_for_mfa_token(user_token: str, totp_code: str, ticket: str) -> str | None:
+    """
+    Exchange a TOTP code and a Discord challenge *ticket* for an MFA
+    authorization token.
+
+    Discord uses a two-step MFA verification for sensitive operations such as
+    bot token resets:
+
+    1. The target endpoint is called (with or without the TOTP code in the
+       ``X-Discord-MFA-Authorization`` header).  When Discord needs to issue a
+       fresh MFA challenge it returns HTTP 401 with a short-lived ``ticket``
+       string in the response body.
+    2. That ticket, together with the current TOTP code, is posted here to
+       ``POST /auth/mfa/totp``.  Discord validates the pair and returns a
+       short-lived MFA authorization token.
+    3. The MFA token is then used as the value of ``X-Discord-MFA-Authorization``
+       in the original request.
+
+    Returns the MFA token string on success, or ``None`` on failure.
+    """
+    url = f"{BASE_URL}/auth/mfa/totp"
+    payload = {
+        "code": totp_code,
+        "ticket": ticket,
+    }
+    response = _post(
+        url,
+        headers=get_headers(user_token),
+        json=payload,
+        timeout=10,
+    )
+    body = _safe_json(response)
+    if response.status_code == 200 and isinstance(body, dict) and "token" in body:
+        return body["token"]
+    msg = body.get("message", body) if isinstance(body, dict) else body
+    print(f"[WARN]  MFA ticket exchange failed: HTTP {response.status_code}: {msg}")
+    return None
+
+
 def reset_bot_token(token: str, app_id: str, mfa_code: str) -> str | None:
     """
     Reset (regenerate) the bot token for *app_id*.
 
-    Discord requires an MFA TOTP code (or backup code) passed via the
-    X-Discord-MFA-Authorization header.  Returns the new token string,
-    or None on failure.
+    Discord requires MFA authorization for this operation.  The function
+    attempts two strategies in order:
+
+    1. **Direct TOTP** – pass the 6-digit TOTP code straight in the
+       ``X-Discord-MFA-Authorization`` header.  This works when Discord
+       accepts the raw code without issuing a separate challenge.
+    2. **Ticket flow** – if Discord responds with HTTP 401 and includes a
+       challenge ``ticket`` in the response body, that ticket is exchanged
+       for a short-lived MFA authorization token via
+       ``POST /auth/mfa/totp``; the token is then used as the header value
+       for a second attempt at the reset.
+
+    Returns the new bot token string on success, or ``None`` on failure.
     """
     url = f"{BASE_URL}/applications/{app_id}/bot/reset"
+
+    # Attempt 1: pass the TOTP code directly as the MFA header value.
     response = _post(
         url,
         headers=get_headers(token, mfa_code=mfa_code),
         json={},
         timeout=10,
     )
-
     body = _safe_json(response)
+
+    # Attempt 2: if Discord issued a challenge ticket in the 401 response,
+    # exchange (ticket + TOTP code) → MFA token and retry.
+    if response.status_code == 401 and isinstance(body, dict):
+        ticket = body.get("ticket")
+        if ticket:
+            mfa_auth_token = _exchange_totp_for_mfa_token(token, mfa_code, ticket)
+            if mfa_auth_token:
+                response = _post(
+                    url,
+                    headers=get_headers(token, mfa_code=mfa_auth_token),
+                    json={},
+                    timeout=10,
+                )
+                body = _safe_json(response)
+
     if response.status_code == 200 and isinstance(body, dict) and "token" in body:
         return body["token"]
 
