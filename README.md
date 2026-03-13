@@ -71,6 +71,22 @@ Steps performed:
 | `Add each bot to a guild after creation? [y/N]:` | Optionally auto-invite every created bot | N |
 | `Enter the target guild ID:` | (only if auto-invite chosen) | `293939939` |
 
+If no TOTP key is provided, a token reset is still attempted and you will be
+prompted interactively to choose one of the following MFA methods per bot:
+
+| Choice | Method | Notes |
+|--------|--------|-------|
+| `1` | Backup code | One of the 8-digit codes from your Discord backup list (one-time use) |
+| `2` | SMS | Discord texts a code to your registered phone |
+| `3` | Skip | Abort the token reset for this bot |
+
+> **Security key / fingerprint (WebAuthn):** hardware security keys,
+> biometric authenticators, and passkeys use the WebAuthn browser API and
+> cannot be driven from a terminal script.  To use this script with such a
+> key, temporarily add a TOTP authenticator (Google Authenticator, Authy,
+> etc.) in Discord → User Settings → My Account → Security, and supply its
+> base-32 secret key above.
+
 Steps performed:
 1. **Create application** – `POST /applications`.  
    With `curl_cffi` loaded, requests are sent with Chrome's TLS fingerprint and
@@ -90,6 +106,14 @@ Steps performed:
    (e.g. `354n6cs4ptulgduoimkczgz72uv2wh3w`) — the script generates the
    current 6-digit code automatically and passes it via
    `X-Discord-MFA-Authorization`.  
+   If you don't have TOTP set up, press Enter to skip the key — you will be
+   prompted to choose another MFA method per bot:
+   - **Backup code** — one of the 8-digit codes from your Discord backup list.
+   - **SMS** — Discord texts a one-time code to your registered phone number.
+   - **Security key / fingerprint (WebAuthn)** — uses the browser API and
+     cannot be driven from a terminal.  Add a TOTP authenticator
+     (Google Authenticator, Authy, etc.) in Discord → Settings → My Account →
+     Security, then use its base-32 secret key in this script.  
    The new token is printed once and saved to `tokens.txt` — keep both safe.
 4. **Invite URL** – Printed in plain text so you can copy it without a browser.
 5. Optionally **auto-add to a guild** using the same OAuth2 authorize endpoint.
@@ -100,14 +124,27 @@ Steps performed:
 
 | Prompt | Description | Default |
 |--------|-------------|---------|
-| `Enter TOTP secret key:` | Your authenticator's base-32 secret key | – |
+| `Enter TOTP secret key:` | Your authenticator's base-32 secret key (optional — press Enter to use another MFA method interactively) | Empty (interactive MFA) |
 | `Enter the target guild ID:` | The server to add every bot to | `1479676935683575960` |
+
+If no TOTP key is provided you will be prompted per bot to choose a MFA method:
+
+| Choice | Method | Notes |
+|--------|--------|-------|
+| `1` | Backup code | One of the 8-digit codes from your Discord backup list (one-time use) |
+| `2` | SMS | Discord texts a code to your registered phone |
+| `3` | Skip | Abort the token reset for that bot |
+
+> **Security key / fingerprint (WebAuthn):** hardware security keys,
+> biometric authenticators, and passkeys use the WebAuthn browser API and
+> cannot be driven from a terminal script.  Add a TOTP authenticator in
+> Discord → User Settings → My Account → Security to use this script.
 
 Steps performed for **each** bot you own:
 1. **Enable all three privileged gateway intents** (Presence, Guild Members,
    Message Content).
-2. **Reset the bot token** using a freshly generated TOTP code — saved to
-   `tokens.txt` automatically.
+2. **Reset the bot token** using TOTP (auto-generated), a backup code, or an
+   SMS code — saved to `tokens.txt` automatically.
 3. **Add to the target guild** with Administrator permissions.
 
 This is the fastest way to bulk-reset tokens and sync all your bots to a
@@ -124,10 +161,15 @@ single server in one command.
   `BotName (ID): TOKEN`.  Keep this file private; add it to `.gitignore`
   (already done in this repo).
 - No user credentials are stored — only the bot tokens you explicitly reset.
-- MFA is handled via your TOTP **secret key** (the base-32 string shown when
-  you first set up 2FA, e.g. `354n6cs4ptulgduoimkczgz72uv2wh3w`). The script
-  uses `pyotp` to derive the current 6-digit code automatically — no
-  authenticator app needed at runtime.
+- **MFA methods supported for token resets:**
+  - **TOTP** (default) — paste your base-32 secret key (e.g. `354n6cs4ptulgduoimkczgz72uv2wh3w`);
+    `pyotp` derives the current 6-digit code automatically — no authenticator app needed at runtime.
+  - **Backup code** — one of the 8-digit one-time codes Discord generated when you first enabled 2FA.
+  - **SMS** — Discord texts a code to your registered phone number; enter it when prompted.
+  - **Security key / fingerprint (WebAuthn)** — passkeys, hardware keys (YubiKey, etc.), and
+    biometric authenticators use the WebAuthn browser API which is not accessible from a terminal.
+    Work-around: add a TOTP authenticator in Discord → User Settings → My Account → Security and
+    use its base-32 secret key with this script.
 - **CAPTCHA prevention (Termux/Android)** – The primary defence is `curl_cffi`
   (`pip install curl_cffi`) which makes every request look like Chrome 120 at
   the TLS layer.  This eliminates CAPTCHA for the vast majority of users.  All
