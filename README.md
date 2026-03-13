@@ -54,7 +54,7 @@ Steps performed:
 | `Enter the number of bots you wanna create:` | How many bot applications to create in this run | `1` |
 | `Enter a base name for the bot(s):` | Name given to every bot created in this run | – |
 | `Enter TOTP secret key:` | Your authenticator's base-32 secret key — the 6-digit code is generated automatically for each bot | skip |
-| `Enter CapSolver API key:` | CapSolver API key used to automatically solve Discord's hCaptcha if triggered. Get one at [capsolver.com](https://capsolver.com) | skip |
+| `Enter NopeCHA API key:` | **Free** NopeCHA API key used to automatically solve Discord's hCaptcha if triggered. Get one at [nopecha.com](https://nopecha.com) — no payment required | skip |
 | `Add each bot to a guild after creation? [y/N]:` | Optionally auto-invite every created bot | N |
 | `Enter the target guild ID:` | (only if auto-invite chosen) | `293939939` |
 
@@ -62,7 +62,7 @@ Steps performed:
 1. **Create application** – `POST /applications`.  
    If Discord returns a CAPTCHA challenge (HTTP 400 with
    `captcha_key: ['captcha-required']`), the script automatically solves it
-   via CapSolver (`HCaptchaEnterpriseTaskProxyLess`) and retries the request.
+   via **NopeCHA** (free, no payment) and retries the request.
 2. **Enable all three privileged gateway intents**:
    - Presence Update intent (bit 12)
    - Server Members intent (bit 13)
@@ -92,8 +92,8 @@ Steps performed:
   authenticator app needed at runtime.
 - **CAPTCHA handling** – Discord may return an `HTTP 400` CAPTCHA challenge
   (`captcha_key: ['captcha-required']`) when creating a new application.
-  The script resolves this automatically using the
-  [CapSolver](https://capsolver.com) service
-  (`HCaptchaEnterpriseTaskProxyLess` task type).  You need a CapSolver API
-  key; CapSolver offers a free tier.  If no key is provided and Discord
-  triggers a CAPTCHA, the script will print a clear error and exit.
+  The script resolves this automatically using
+  [NopeCHA](https://nopecha.com) — a **free** hCaptcha solver (500
+  solves/month on the free tier, no credit card required).  You need a
+  NopeCHA API key (register at nopecha.com).  If no key is provided and
+  Discord triggers a CAPTCHA, the script will print a clear error and exit.
