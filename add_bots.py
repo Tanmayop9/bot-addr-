@@ -449,30 +449,188 @@ def _exchange_totp_for_mfa_token(user_token: str, totp_code: str, ticket: str) -
     return None
 
 
-def reset_bot_token(token: str, app_id: str, totp_key: str) -> str | None:
+def _exchange_backup_code_for_mfa_token(user_token: str, backup_code: str, ticket: str) -> str | None:
+    """
+    Exchange a Discord backup code and a challenge *ticket* for an MFA
+    authorization token via ``POST /auth/mfa/backup``.
+
+    Backup codes are the 8-digit one-time codes Discord generates when you
+    first enable 2FA.  Each code can only be used once.
+
+    Returns the MFA token string on success, or ``None`` on failure.
+    """
+    url = f"{BASE_URL}/auth/mfa/backup"
+    # Normalize the code: strip spaces/dashes so users can paste formatted codes
+    cleaned_code = backup_code.strip().replace(" ", "").replace("-", "")
+    payload = {
+        "code": cleaned_code,
+        "ticket": ticket,
+    }
+    response = _post(
+        url,
+        headers=get_headers(user_token),
+        json=payload,
+        timeout=10,
+    )
+    body = _safe_json(response)
+    if response.status_code == 200 and isinstance(body, dict) and "token" in body:
+        return body["token"]
+    msg = body.get("message", body) if isinstance(body, dict) else body
+    print(f"[WARN]  Backup code exchange failed: HTTP {response.status_code}: {msg}")
+    return None
+
+
+def _send_sms_code(user_token: str, ticket: str) -> bool:
+    """
+    Ask Discord to send an SMS verification code to the user's registered
+    phone number via ``POST /auth/mfa/sms/send``.
+
+    Returns ``True`` if the SMS was dispatched successfully, ``False``
+    otherwise.
+    """
+    url = f"{BASE_URL}/auth/mfa/sms/send"
+    response = _post(
+        url,
+        headers=get_headers(user_token),
+        json={"ticket": ticket},
+        timeout=10,
+    )
+    body = _safe_json(response)
+    if response.status_code == 200:
+        phone = body.get("phone", "") if isinstance(body, dict) else ""
+        suffix = f" to {phone}" if phone else ""
+        print(f"[INFO] SMS verification code sent{suffix}.")
+        return True
+    msg = body.get("message", body) if isinstance(body, dict) else body
+    print(f"[WARN]  Failed to send SMS code: HTTP {response.status_code}: {msg}")
+    return False
+
+
+def _exchange_sms_for_mfa_token(user_token: str, sms_code: str, ticket: str) -> str | None:
+    """
+    Exchange an SMS verification code and a challenge *ticket* for an MFA
+    authorization token via ``POST /auth/mfa/sms``.
+
+    Returns the MFA token string on success, or ``None`` on failure.
+    """
+    url = f"{BASE_URL}/auth/mfa/sms"
+    payload = {
+        "code": sms_code.strip(),
+        "ticket": ticket,
+    }
+    response = _post(
+        url,
+        headers=get_headers(user_token),
+        json=payload,
+        timeout=10,
+    )
+    body = _safe_json(response)
+    if response.status_code == 200 and isinstance(body, dict) and "token" in body:
+        return body["token"]
+    msg = body.get("message", body) if isinstance(body, dict) else body
+    print(f"[WARN]  SMS code exchange failed: HTTP {response.status_code}: {msg}")
+    return None
+
+
+def _resolve_mfa_challenge(user_token: str, ticket: str, totp_key: str | None = None) -> str | None:
+    """
+    Resolve a Discord MFA challenge *ticket* using the best available method.
+
+    Attempts each method in order of convenience:
+
+    1. **TOTP** – If *totp_key* is provided the 6-digit code is generated
+       automatically and exchanged for an MFA authorization token via
+       ``POST /auth/mfa/totp``.
+    2. **Backup code** – The user is prompted to enter one of their Discord
+       8-digit backup codes; exchanged via ``POST /auth/mfa/backup``.
+    3. **SMS** – Discord texts a one-time code to the user's registered phone
+       number; the user enters it and it is exchanged via ``POST /auth/mfa/sms``.
+
+    **WebAuthn / Security fingerprint note** – Hardware security keys,
+    biometric fingerprint authenticators, and passkeys all use the WebAuthn
+    browser API (``navigator.credentials``).  This API is only accessible
+    inside a browser context and cannot be driven from a terminal script.
+    If your only MFA method is a security key or fingerprint, the guidance
+    printed below explains how to temporarily add TOTP so the script can
+    proceed.
+
+    Returns the short-lived MFA authorization token on success, or ``None``
+    if all methods fail or the user declines.
+    """
+    # ── Method 1: TOTP (automatic, no user interaction needed) ────────────────
+    if totp_key:
+        try:
+            mfa_code = totp_code_from_key(totp_key)
+            mfa_token = _exchange_totp_for_mfa_token(user_token, mfa_code, ticket)
+            if mfa_token:
+                return mfa_token
+            print("[WARN]  TOTP verification failed. Trying other MFA methods …")
+        except Exception as exc:
+            print(f"[WARN]  Could not generate TOTP code: {exc}. Trying other MFA methods …")
+
+    # ── Interactive fallback: backup code or SMS ───────────────────────────────
+    print()
+    print("┌─────────────────────────────────────────────────────────────────┐")
+    print("│              MFA Required — choose a verification method        │")
+    print("├─────────────────────────────────────────────────────────────────┤")
+    print("│  [1] Backup code   — one of your Discord 8-digit backup codes   │")
+    print("│  [2] SMS code      — Discord texts a code to your phone         │")
+    print("│  [3] Skip          — abort this token reset                     │")
+    print("├─────────────────────────────────────────────────────────────────┤")
+    print("│  Security key / fingerprint (WebAuthn) note:                    │")
+    print("│  Hardware security keys, fingerprint authenticators, and        │")
+    print("│  passkeys use the WebAuthn browser API and cannot be used       │")
+    print("│  from a terminal script.  To use this script with such a key:   │")
+    print("│   • In Discord: Settings → My Account → Security (enable 2FA).  │")
+    print("│   • Add a TOTP authenticator (Google Authenticator, Authy …).   │")
+    print("│   • Use its base-32 secret key as the TOTP key in this script.  │")
+    print("└─────────────────────────────────────────────────────────────────┘")
+    print()
+
+    choice = input("Choose MFA method [1/2/3, default: 3]: ").strip()
+
+    if choice == "1":
+        backup_code = input("Enter your Discord backup code: ").strip()
+        if backup_code:
+            return _exchange_backup_code_for_mfa_token(user_token, backup_code, ticket)
+
+    elif choice == "2":
+        if _send_sms_code(user_token, ticket):
+            sms_code = input("Enter the SMS code you received: ").strip()
+            if sms_code:
+                return _exchange_sms_for_mfa_token(user_token, sms_code, ticket)
+
+    return None
+
+
+def reset_bot_token(token: str, app_id: str, totp_key: str | None = None) -> str | None:
     """
     Reset (regenerate) the bot token for *app_id*.
 
     Discord requires MFA authorization for this operation.  The function
-    attempts every known strategy in order, generating a fresh TOTP code for
-    each attempt so that a window-boundary expiry never causes a silent failure:
+    attempts every known strategy in order.  When a ``ticket`` is returned
+    in a 401 response, :func:`_resolve_mfa_challenge` is called to obtain
+    an MFA authorization token using whichever method the user has available
+    (TOTP, backup code, or SMS):
 
     1. **Challenge-first flow** – call the endpoint *without* any MFA header to
        trigger Discord's challenge; Discord returns HTTP 401 with a short-lived
-       ``ticket``.  That ticket is exchanged for an MFA authorization token via
-       ``POST /auth/mfa/totp`` and the reset is retried with the MFA token.
+       ``ticket``.  That ticket is resolved via :func:`_resolve_mfa_challenge`
+       (TOTP → backup code → SMS) and the reset is retried with the resulting
+       MFA token.
     2. **Direct TOTP** – pass the 6-digit TOTP code straight in the
-       ``X-Discord-MFA-Authorization`` header.  This succeeds on some Discord
-       API versions that accept a raw code without issuing a challenge first.
+       ``X-Discord-MFA-Authorization`` header (only when *totp_key* is
+       provided).  This succeeds on some Discord API versions that accept a
+       raw code without issuing a challenge first.
     3. **Ticket flow from direct attempt** – if the direct-TOTP attempt itself
-       returns a ``ticket`` in the 401 body, that ticket is exchanged for an MFA
-       token and the reset is retried one final time.
+       returns a ``ticket`` in the 401 body, that ticket is again resolved via
+       :func:`_resolve_mfa_challenge` and the reset is retried one final time.
 
     Returns the new bot token string on success, or ``None`` on failure.
     """
     url = f"{BASE_URL}/applications/{app_id}/bot/reset"
 
-    # ── Strategy 1: no-MFA challenge → ticket → MFA token → reset ─────────────
+    # ── Strategy 1: no-MFA challenge → ticket → resolve MFA → reset ──────────
     # Call without any MFA header so Discord issues a fresh challenge ticket.
     response = _post(url, headers=get_headers(token), json={}, timeout=10)
     body = _safe_json(response)
@@ -480,51 +638,41 @@ def reset_bot_token(token: str, app_id: str, totp_key: str) -> str | None:
     if response.status_code == 401 and isinstance(body, dict):
         ticket = body.get("ticket")
         if ticket:
-            try:
-                mfa_code = totp_code_from_key(totp_key)
-            except Exception as exc:
-                print(f"[WARN]  Could not generate TOTP code (strategy 1): {exc}")
-            else:
-                mfa_auth_token = _exchange_totp_for_mfa_token(token, mfa_code, ticket)
-                if mfa_auth_token:
-                    response = _post(
-                        url,
-                        headers=get_headers(token, mfa_code=mfa_auth_token),
-                        json={},
-                        timeout=10,
-                    )
-                    body = _safe_json(response)
-                    if response.status_code == 200 and isinstance(body, dict) and "token" in body:
-                        return body["token"]
+            mfa_auth_token = _resolve_mfa_challenge(token, ticket, totp_key)
+            if mfa_auth_token:
+                response = _post(
+                    url,
+                    headers=get_headers(token, mfa_code=mfa_auth_token),
+                    json={},
+                    timeout=10,
+                )
+                body = _safe_json(response)
+                if response.status_code == 200 and isinstance(body, dict) and "token" in body:
+                    return body["token"]
 
     # ── Strategy 2: direct TOTP code in the MFA header ────────────────────────
     # Generate a fresh code in case the TOTP window has advanced.
-    try:
-        mfa_code = totp_code_from_key(totp_key)
-    except Exception as exc:
-        print(f"[WARN]  Could not generate TOTP code (strategy 2): {exc}")
-        mfa_code = None
+    if totp_key:
+        try:
+            mfa_code = totp_code_from_key(totp_key)
+        except Exception as exc:
+            print(f"[WARN]  Could not generate TOTP code (strategy 2): {exc}")
+            mfa_code = None
 
-    if mfa_code:
-        response = _post(
-            url,
-            headers=get_headers(token, mfa_code=mfa_code),
-            json={},
-            timeout=10,
-        )
-        body = _safe_json(response)
+        if mfa_code:
+            response = _post(
+                url,
+                headers=get_headers(token, mfa_code=mfa_code),
+                json={},
+                timeout=10,
+            )
+            body = _safe_json(response)
 
-        # ── Strategy 3: ticket issued during direct-TOTP attempt → exchange → retry
-        if response.status_code == 401 and isinstance(body, dict):
-            ticket = body.get("ticket")
-            if ticket:
-                try:
-                    mfa_code = totp_code_from_key(totp_key)
-                except Exception as exc:
-                    print(f"[WARN]  Could not generate TOTP code (strategy 3): {exc}")
-                    mfa_code = None
-                if mfa_code:
-                    mfa_auth_token = _exchange_totp_for_mfa_token(token, mfa_code, ticket)
+            # ── Strategy 3: ticket from direct-TOTP attempt → resolve MFA → retry
+            if response.status_code == 401 and isinstance(body, dict):
+                ticket = body.get("ticket")
+                if ticket:
+                    mfa_auth_token = _resolve_mfa_challenge(token, ticket, totp_key)
                     if mfa_auth_token:
                         response = _post(
                             url,
@@ -617,11 +765,15 @@ def flow_create_bot(token: str) -> None:
         return
 
     # ── TOTP secret key (asked once, reused for every reset) ───────────────────
-    print("\n[INFO] To reset/retrieve bot tokens, Discord requires an MFA code.")
-    print("       Paste your TOTP secret key (e.g. 354n6cs4ptulgduoimkczgz72uv2wh3w).")
-    print("       The current 6-digit code will be generated automatically for each bot.")
-    print("       Press Enter to skip token reset for all bots.")
-    totp_key = input("Enter TOTP secret key (or press Enter to skip): ").strip()
+    print("\n[INFO] To reset/retrieve bot tokens, Discord requires MFA (2FA) verification.")
+    print("       Supported methods:")
+    print("         • TOTP   — paste your base-32 secret key; codes are auto-generated.")
+    print("         • Backup — enter a Discord backup code when prompted per bot.")
+    print("         • SMS    — Discord texts a code to your registered phone per bot.")
+    print("       (Security key / fingerprint requires a browser — see the MFA prompt.)")
+    print("       Paste your TOTP secret key below, or press Enter to choose another")
+    print("       MFA method interactively when each token reset is attempted.")
+    totp_key = input("Enter TOTP secret key (or press Enter for interactive MFA / skip): ").strip()
 
     # ── NopeCHA API key (optional automatic CAPTCHA solver) ──────────────────
     print("\n[INFO] Discord may require a CAPTCHA when creating new applications.")
@@ -664,23 +816,21 @@ def flow_create_bot(token: str) -> None:
         print("[INFO] Enabling all three privileged gateway intents …")
         enable_all_intents(token, app_id)
 
-        # Step 3 – Reset token using TOTP key (fresh code generated internally)
-        if totp_key:
-            print("[INFO] Resetting bot token …")
-            try:
-                new_token = reset_bot_token(token, app_id, totp_key)
-            except Exception as exc:
-                print(f"[ERROR] Could not reset bot token: {exc}")
-                print("[INFO]  Skipped token reset for this bot.")
-                new_token = None
-            if new_token:
-                print(f"[OK]    Bot token: {new_token}")
-                print("[WARN]  Keep this token secret — treat it like a password!")
-                save_token(app_name, app_id, new_token)
-            else:
-                print("[INFO]  Token not retrieved. Reset it later in the Developer Portal.")
+        # Step 3 – Reset token (TOTP auto-generated if key provided; otherwise
+        #           user is prompted interactively for backup code or SMS).
+        print("[INFO] Resetting bot token …")
+        try:
+            new_token = reset_bot_token(token, app_id, totp_key or None)
+        except Exception as exc:
+            print(f"[ERROR] Could not reset bot token: {exc}")
+            print("[INFO]  Skipped token reset for this bot.")
+            new_token = None
+        if new_token:
+            print(f"[OK]    Bot token: {new_token}")
+            print("[WARN]  Keep this token secret — treat it like a password!")
+            save_token(app_name, app_id, new_token)
         else:
-            print("[INFO]  Skipped token reset.")
+            print("[INFO]  Token not retrieved. Reset it later in the Developer Portal.")
 
         # Step 4 – Invite URL
         invite_url = build_invite_url(app_id)
@@ -700,8 +850,7 @@ def flow_create_bot(token: str) -> None:
         print()  # blank line between bots
 
     print(f"[INFO] Done — {count} bot(s) processed.")
-    if totp_key:
-        print(f"[INFO] All retrieved tokens saved to {TOKEN_FILE}.")
+    print(f"[INFO] All retrieved tokens saved to {TOKEN_FILE}.")
 
 
 # ── Flow 3: manage all owned bots ─────────────────────────────────────────────
@@ -713,7 +862,7 @@ def flow_manage_owned_bots(token: str) -> None:
 
     For each owned bot application:
       1. Enable all three privileged gateway intents.
-      2. Reset the bot token using a TOTP MFA code.
+      2. Reset the bot token using MFA (TOTP, backup code, or SMS).
       3. Add the bot to the target guild.
       4. Save the new token to ``tokens.txt``.
     """
@@ -721,14 +870,16 @@ def flow_manage_owned_bots(token: str) -> None:
 
     print("\n── Manage all owned bots ─────────────────────────────────────────────")
 
-    # ── TOTP secret key ────────────────────────────────────────────────────────
-    print("\n[INFO] A TOTP MFA code is required to reset each bot token.")
-    print("       Paste your TOTP secret key (e.g. 354n6cs4ptulgduoimkczgz72uv2wh3w).")
-    print("       The current 6-digit code will be generated automatically for each bot.")
-    totp_key = input("Enter TOTP secret key: ").strip()
-    if not totp_key:
-        print("[ERROR] TOTP key is required for token resets. Aborting.")
-        return
+    # ── TOTP secret key (optional) ─────────────────────────────────────────────
+    print("\n[INFO] MFA (2FA) verification is required to reset each bot token.")
+    print("       Supported methods:")
+    print("         • TOTP   — paste your base-32 secret key; codes are auto-generated.")
+    print("         • Backup — enter a Discord backup code when prompted per bot.")
+    print("         • SMS    — Discord texts a code to your registered phone per bot.")
+    print("       (Security key / fingerprint requires a browser — see the MFA prompt.)")
+    print("       Paste your TOTP secret key below, or press Enter to be prompted for")
+    print("       a backup code or SMS code interactively for each bot.")
+    totp_key = input("Enter TOTP secret key (or press Enter for interactive MFA): ").strip()
 
     # ── Target guild ───────────────────────────────────────────────────────────
     guild_id = input(
@@ -758,10 +909,11 @@ def flow_manage_owned_bots(token: str) -> None:
         print("[INFO] Enabling all three privileged gateway intents …")
         enable_all_intents(token, app_id)
 
-        # Step 2 – Reset token using TOTP key (fresh code generated internally)
+        # Step 2 – Reset token (TOTP auto-generated if key provided; otherwise
+        #           user is prompted interactively for backup code or SMS).
         print("[INFO] Resetting bot token …")
         try:
-            new_token = reset_bot_token(token, app_id, totp_key)
+            new_token = reset_bot_token(token, app_id, totp_key or None)
         except Exception as exc:
             print(f"[ERROR] Could not reset bot token: {exc}")
             print("[INFO]  Skipped — token not reset for this bot.")
