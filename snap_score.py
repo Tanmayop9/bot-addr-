@@ -18,11 +18,14 @@ Usage:
 
 import itertools
 import random
+import ssl
 import sys
 import time
 import uuid
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.ssl_ import create_urllib3_context
 
 # Optional: curl_cffi impersonates Chrome's TLS fingerprint so Snapchat does
 # not flag automated requests.  Install once with:  pip install curl_cffi
@@ -31,6 +34,31 @@ try:
     _CFFI_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _CFFI_AVAILABLE = False
+
+
+class _SSLAdapter(HTTPAdapter):
+    """HTTPAdapter that tolerates unexpected TLS EOF (Python ≥ 3.12 / OpenSSL ≥ 3).
+
+    Some servers (including auth.snapchat.com) close the TLS connection without
+    sending a ``close_notify`` alert.  Python 3.12 made the OpenSSL default
+    stricter about this, causing ``ssl.SSLEOFError: UNEXPECTED_EOF_WHILE_READING``.
+    Setting ``OP_IGNORE_UNEXPECTED_EOF`` (added in Python 3.11) restores the
+    lenient behaviour so those servers keep working.
+    """
+
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = create_urllib3_context()
+        # OP_IGNORE_UNEXPECTED_EOF is only available on Python ≥ 3.11.
+        # On older Pythons the flag doesn't exist and also isn't needed.
+        ctx.options |= getattr(ssl, "OP_IGNORE_UNEXPECTED_EOF", 0)
+        kwargs["ssl_context"] = ctx
+        super().init_poolmanager(*args, **kwargs)
+
+
+# A shared requests session that mounts the SSL-tolerant adapter for all HTTPS
+# requests.  Only used when curl_cffi is not available.
+_requests_session = requests.Session()
+_requests_session.mount("https://", _SSLAdapter())
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -65,14 +93,14 @@ def _get(url: str, **kwargs):
     """HTTP GET — uses curl_cffi Chrome impersonation when available."""
     if _CFFI_AVAILABLE:
         return _cffi_requests.get(url, impersonate=_IMPERSONATE, **kwargs)
-    return requests.get(url, **kwargs)
+    return _requests_session.get(url, **kwargs)
 
 
 def _post(url: str, **kwargs):
     """HTTP POST — uses curl_cffi Chrome impersonation when available."""
     if _CFFI_AVAILABLE:
         return _cffi_requests.post(url, impersonate=_IMPERSONATE, **kwargs)
-    return requests.post(url, **kwargs)
+    return _requests_session.post(url, **kwargs)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
